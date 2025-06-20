@@ -41,9 +41,9 @@ class ConvSubnet(nn.Module):
         return x
 
 
-class CrossSensorInteractionBlock(nn.Module):
+class SensorInteractionBlock(nn.Module):
     def __init__(self, embed_dim: int, num_heads: int, mlp_dim: int) -> None:
-        super(CrossSensorInteractionBlock, self).__init__()
+        super(SensorInteractionBlock, self).__init__()
 
         # embed_dim corresponds to num_filters
         self.mhsa = nn.MultiheadAttention(
@@ -77,11 +77,13 @@ class CrossSensorInteractionBlock(nn.Module):
         return x
 
 
-class CrossSensorFusion(nn.Module):
-    def __init__(self, embed_dim: int, num_sensors: int) -> None:
-        super(CrossSensorFusion, self).__init__()
-
-        self.proj = nn.Linear(embed_dim * num_sensors, embed_dim)
+class SensorFusion(nn.Module):
+    def __init__(
+        self, input_embed_dim: int, num_sensors: int, output_embed_dim: int
+    ) -> None:
+        super(SensorFusion, self).__init__()
+        self.output_embed_dim = output_embed_dim
+        self.proj = nn.Linear(input_embed_dim * num_sensors, output_embed_dim)
 
     def forward(self, x: Tensor) -> Tensor:
         # (batch_size, num_filters, length, num_sensors)
@@ -95,17 +97,38 @@ class CrossSensorFusion(nn.Module):
         # (batch_size * length, num_filters * num_sensors)
 
         x = self.proj(x)
-        # (batch_size * length, embed_dim)
+        # (batch_size * length, output_embed_dim)
 
-        x = x.view(batch_size, length, num_filters)
-        # (batch_size, length, embed_dim)
+        x = x.view(batch_size, length, self.output_embed_dim)
+        # (batch_size, length, output_embed_dim)
 
         return x
+
+
+class TemporalFusion(nn.Module):
+    def __init__(self, embed_dim: int, num_layers: int) -> None:
+        super(TemporalFusion, self).__init__()
+
+        self.lstm = nn.LSTM(
+            input_size=embed_dim,
+            hidden_size=embed_dim,
+            num_layers=num_layers,
+            batch_first=True,
+        )
+
+    def forward(self, x: Tensor) -> Tensor:
+        # (batch_size, length, input_dim)
+
+        out, _ = self.lstm(x)
+        # (batch_size, length, input_dim)
+
+        return out
 
 
 class TinyHAR(nn.Module):
     def __init__(
         self,
+        num_classes: int = 6,
         num_sensors: int = 6,
         num_conv_layers: int = 4,
         num_filters: int = 32,
@@ -114,6 +137,7 @@ class TinyHAR(nn.Module):
         num_heads: int = 4,
         mlp_dim: int = 64,
         num_blocks: int = 2,
+        lstm_layers: int = 2,
     ) -> None:
         super(TinyHAR, self).__init__()
 
@@ -124,38 +148,67 @@ class TinyHAR(nn.Module):
             stride=stride,
         )
 
-        self.cross_channel_interaction = nn.Sequential(
+        self.sensor_interaction = nn.Sequential(
             *[
-                CrossSensorInteractionBlock(
+                SensorInteractionBlock(
                     embed_dim=num_filters, num_heads=num_heads, mlp_dim=mlp_dim
                 )
                 for _ in range(num_blocks)
             ]
         )
 
-        self.cross_sensor_fusion = CrossSensorFusion(
-            embed_dim=num_filters, num_sensors=num_sensors
+        self.sensor_fusion = SensorFusion(
+            input_embed_dim=num_filters,
+            num_sensors=num_sensors,
+            output_embed_dim=2 * num_filters,
         )
 
-    def forward(self, x: Tensor) -> Tensor:
+        self.temporal_fusion = TemporalFusion(
+            embed_dim=2 * num_filters,
+            num_layers=lstm_layers,
+        )
+
+        self.predictor = nn.Linear(2 * num_filters, num_classes)
+
+    def encode(self, x: Tensor) -> Tensor:
         # (batch_size, num_filters, window_size, num_sensors)
+
+        # print(x.shape)
 
         x = self.conv_subnet(x)
         # (batch_size, num_filters, length, num_sensors)
 
-        print(x.shape)
+        # print(x.shape)
 
-        x = self.cross_channel_interaction(x)
+        x = self.sensor_interaction(x)
         # (batch_size, num_filters, length, num_sensors)
 
-        print(x.shape)
+        # print(x.shape)
 
-        x = self.cross_sensor_fusion(x)
+        x = self.sensor_fusion(x)
         # (batch_size, length, num_filters)
 
-        print(x.shape)
+        # print(x.shape)
+
+        x = self.temporal_fusion(x)
+        # (batch_size, length, num_filters)
+
+        # print(x.shape)
 
         return x
+
+    def forward(self, x: Tensor) -> Tensor:
+        # (batch_size, length, num_filters)
+
+        x = self.encode(x)
+        # (batch_size, length, num_filters)
+
+        logits = self.predictor(x[:, -1, :])
+        # (batch_size, num_classes)
+
+        # print(logits.shape)
+
+        return logits
 
 
 if __name__ == "__main__":
