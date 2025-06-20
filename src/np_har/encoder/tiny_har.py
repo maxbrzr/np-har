@@ -42,18 +42,18 @@ class ConvSubnet(nn.Module):
 
 
 class SensorInteractionBlock(nn.Module):
-    def __init__(self, embed_dim: int, num_heads: int, mlp_dim: int) -> None:
+    def __init__(self, num_filters: int, num_heads: int, mlp_dim: int) -> None:
         super(SensorInteractionBlock, self).__init__()
 
         # embed_dim corresponds to num_filters
         self.mhsa = nn.MultiheadAttention(
-            embed_dim=embed_dim, num_heads=num_heads, batch_first=True
+            embed_dim=num_filters, num_heads=num_heads, batch_first=True
         )
 
         self.mlp = nn.Sequential(
-            nn.Linear(embed_dim, mlp_dim),
+            nn.Linear(num_filters, mlp_dim),
             nn.ReLU(),
-            nn.Linear(mlp_dim, embed_dim),
+            nn.Linear(mlp_dim, num_filters),
         )
 
     def forward(self, x: Tensor) -> Tensor:
@@ -117,10 +117,13 @@ class TemporalFusion(nn.Module):
         )
 
     def forward(self, x: Tensor) -> Tensor:
-        # (batch_size, length, input_dim)
+        # (batch_size, length, embed_dim)
 
         out, _ = self.lstm(x)
-        # (batch_size, length, input_dim)
+        # (batch_size, length, embed_dim)
+
+        out = out[:, -1, :]
+        # (batch_size, embed_dim)
 
         return out
 
@@ -138,6 +141,7 @@ class TinyHAR(nn.Module):
         mlp_dim: int = 64,
         num_blocks: int = 2,
         lstm_layers: int = 2,
+        embed_dim: int = 64,
     ) -> None:
         super(TinyHAR, self).__init__()
 
@@ -151,7 +155,7 @@ class TinyHAR(nn.Module):
         self.sensor_interaction = nn.Sequential(
             *[
                 SensorInteractionBlock(
-                    embed_dim=num_filters, num_heads=num_heads, mlp_dim=mlp_dim
+                    num_filters=num_filters, num_heads=num_heads, mlp_dim=mlp_dim
                 )
                 for _ in range(num_blocks)
             ]
@@ -160,18 +164,18 @@ class TinyHAR(nn.Module):
         self.sensor_fusion = SensorFusion(
             input_embed_dim=num_filters,
             num_sensors=num_sensors,
-            output_embed_dim=2 * num_filters,
+            output_embed_dim=embed_dim,
         )
 
         self.temporal_fusion = TemporalFusion(
-            embed_dim=2 * num_filters,
+            embed_dim=embed_dim,
             num_layers=lstm_layers,
         )
 
-        self.predictor = nn.Linear(2 * num_filters, num_classes)
+        self.predictor = nn.Linear(embed_dim, num_classes)
 
     def encode(self, x: Tensor) -> Tensor:
-        # (batch_size, num_filters, window_size, num_sensors)
+        # (batch_size, 1, window_size, num_sensors)
 
         # print(x.shape)
 
@@ -186,24 +190,24 @@ class TinyHAR(nn.Module):
         # print(x.shape)
 
         x = self.sensor_fusion(x)
-        # (batch_size, length, num_filters)
+        # (batch_size, length, embed_dim)
 
         # print(x.shape)
 
         x = self.temporal_fusion(x)
-        # (batch_size, length, num_filters)
+        # (batch_size, embed_dim)
 
         # print(x.shape)
 
         return x
 
     def forward(self, x: Tensor) -> Tensor:
-        # (batch_size, length, num_filters)
+        # (batch_size, 1, window_size, num_sensors)
 
         x = self.encode(x)
-        # (batch_size, length, num_filters)
+        # (batch_size, embed_dim)
 
-        logits = self.predictor(x[:, -1, :])
+        logits = self.predictor(x)
         # (batch_size, num_classes)
 
         # print(logits.shape)
@@ -216,3 +220,4 @@ if __name__ == "__main__":
     input = torch.rand(16, 1, 128, 6)
     output = model(input)
     print(model)
+    print(output.shape)

@@ -8,6 +8,7 @@ authors = [
 ]
 requires-python = ">=3.13"
 dependencies = [
+    "har-datasets",
     "torch>=2.7.1",
     "tqdm>=4.67.1",
 ]
@@ -15,3 +16,6 @@ dependencies = [
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.uv.sources]
+har-datasets = { git = "https://github.com/maxbrzr/har-datasets.git" }
